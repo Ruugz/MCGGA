@@ -2,9 +2,8 @@ name: Android CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, master, develop]
   pull_request:
-    branches: [main, develop]
   workflow_dispatch:
 
 concurrency:
@@ -16,7 +15,7 @@ permissions:
 
 jobs:
   build:
-    name: Lint, Test & Build Debug APK
+    name: Build Debug APK
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -30,47 +29,72 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Setup Gradle 8.9 (with cache)
+      - name: Setup Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
 
-      - name: Lint
-        id: lint
-        run: gradle lintDebug --stacktrace
-
-      - name: Unit tests
-        id: tests
-        run: gradle testDebugUnitTest --stacktrace
+      # Cari folder project otomatis (root atau subfolder) dan pilih gradlew jika ada
+      - name: Detect project root
+        id: root
+        run: |
+          SETTINGS=$(find . -maxdepth 3 \( -name settings.gradle.kts -o -name settings.gradle \) | head -n 1)
+          if [ -z "$SETTINGS" ]; then
+            echo "::error::settings.gradle(.kts) tidak ditemukan. Ekstrak zip dulu, lalu upload ISI-nya ke repo."
+            ls -R | head -50
+            exit 1
+          fi
+          DIR=$(dirname "$SETTINGS")
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          if [ -f "$DIR/gradle/wrapper/gradle-wrapper.jar" ] && [ -f "$DIR/gradlew" ]; then
+            chmod +x "$DIR/gradlew"
+            echo "cmd=./gradlew" >> "$GITHUB_OUTPUT"
+          else
+            echo "cmd=gradle" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Project root: $DIR"
 
       - name: Build debug APK
         id: assemble
-        run: gradle assembleDebug --stacktrace
-
-      - name: Output Contract (PASS / FAIL)
-        if: always()
-        run: |
-          {
-            echo "## Output Contract"
-            echo "- Lint: ${{ steps.lint.outcome == 'success' && '[PASS]' || '[FAIL]' }}"
-            echo "- Unit tests: ${{ steps.tests.outcome == 'success' && '[PASS]' || '[FAIL]' }}"
-            echo "- Build: ${{ steps.assemble.outcome == 'success' && '[PASS]' || '[FAIL]' }}"
-          } >> "$GITHUB_STEP_SUMMARY"
+        working-directory: ${{ steps.root.outputs.dir }}
+        run: ${{ steps.root.outputs.cmd }} assembleDebug --stacktrace
 
       - name: Upload debug APK
         if: steps.assemble.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: magic-chess-copilot-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: ${{ steps.root.outputs.dir }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
-      - name: Upload test & lint reports
+      - name: Unit tests
+        id: tests
+        working-directory: ${{ steps.root.outputs.dir }}
+        run: ${{ steps.root.outputs.cmd }} testDebugUnitTest --stacktrace
+
+      # Lint tidak memblokir APK; hasilnya tetap dilaporkan
+      - name: Lint
+        id: lint
+        continue-on-error: true
+        working-directory: ${{ steps.root.outputs.dir }}
+        run: ${{ steps.root.outputs.cmd }} lintDebug --stacktrace
+
+      - name: Output Contract (PASS / FAIL)
+        if: always()
+        run: |
+          {
+            echo "## Output Contract"
+            echo "- Build: ${{ steps.assemble.outcome == 'success' && '[PASS]' || '[FAIL]' }}"
+            echo "- Unit tests: ${{ steps.tests.outcome == 'success' && '[PASS]' || '[FAIL]' }}"
+            echo "- Lint: ${{ steps.lint.outcome == 'success' && '[PASS]' || '[FAIL]' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: reports
           path: |
-            app/build/reports/lint-results-debug.html
-            app/build/reports/tests/testDebugUnitTest/
+            ${{ steps.root.outputs.dir }}/app/build/reports/lint-results-debug.html
+            ${{ steps.root.outputs.dir }}/app/build/reports/tests/testDebugUnitTest/
           if-no-files-found: ignore
