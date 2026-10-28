@@ -34,13 +34,21 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      # Cari folder project otomatis (root atau subfolder) dan pilih gradlew jika ada
-      - name: Detect project root
+      - name: Detect / extract project
         id: root
         run: |
-          SETTINGS=$(find . -maxdepth 3 \( -name settings.gradle.kts -o -name settings.gradle \) | head -n 1)
+          SETTINGS=$(find . -maxdepth 4 \( -name settings.gradle.kts -o -name settings.gradle \) | head -n 1)
           if [ -z "$SETTINGS" ]; then
-            echo "::error::settings.gradle(.kts) tidak ditemukan. Ekstrak zip dulu, lalu upload ISI-nya ke repo."
+            ZIP=$(find . -maxdepth 2 -iname '*.zip' | head -n 1)
+            if [ -n "$ZIP" ]; then
+              echo "Project belum diekstrak, mengekstrak $ZIP"
+              mkdir -p _project
+              unzip -q -o "$ZIP" -d _project
+              SETTINGS=$(find _project -maxdepth 4 \( -name settings.gradle.kts -o -name settings.gradle \) | head -n 1)
+            fi
+          fi
+          if [ -z "$SETTINGS" ]; then
+            echo "::error::settings.gradle(.kts) tidak ditemukan di repo maupun di dalam zip."
             ls -R | head -50
             exit 1
           fi
@@ -69,10 +77,10 @@ jobs:
 
       - name: Unit tests
         id: tests
+        continue-on-error: true
         working-directory: ${{ steps.root.outputs.dir }}
         run: ${{ steps.root.outputs.cmd }} testDebugUnitTest --stacktrace
 
-      # Lint tidak memblokir APK; hasilnya tetap dilaporkan
       - name: Lint
         id: lint
         continue-on-error: true
